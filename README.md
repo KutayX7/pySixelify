@@ -2,7 +2,7 @@
 A SIXEL converter utility written in Python.
 The only dependency is pillow, and it's optional.
 
-## Comamnd line arguments (requires pillow for now)
+## Comamnd line arguments (requires pillow, for now)
 ```
             [filename] : Name or path of the input file.
      -o, --output-file : Name or path of the output file.
