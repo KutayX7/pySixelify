@@ -21,27 +21,35 @@
 # SOFTWARE.
 
 
-from typing import Literal
 
+import argparse
+from typing import Literal, List, Tuple
 
-def print_image_from_path(path: str, COLOR_REGISTER_COUNT: int = 256):
+type _RGBAImage = List[List[Tuple[int, int, int, int]]]
+
+def from_file_to_RGBImage(file_path: str) -> _RGBAImage:
     try:
         import PIL.Image
     except:
         raise Exception("This function requires the `pillow` module. Install it with `pip install pillow`.")
-    with PIL.Image.open(path) as image:
+    with PIL.Image.open(file_path) as image:
         image = image.convert("RGBA", colors=256)
         width, height = image.width, image.height
         flat_pixels = list(image.getdata())
-        pixels_2d = [flat_pixels[i * width:(i + 1) * width] for i in range(height)]
-        print(img2sixels(pixels_2d, COLOR_REGISTER_COUNT))
+        return [flat_pixels[i * width:(i + 1) * width] for i in range(height)]
 
+def print_image_from_path(path: str, COLOR_REGISTER_COUNT: int = 256):
+    print(img2sixels(from_file_to_RGBImage(path), COLOR_REGISTER_COUNT))
+
+def from_file_to_file(input_path: str, output_path: str):
+    with open(output_path, 'wb') as file:
+        file.write(img2sixels(from_file_to_RGBImage(input_path)).encode('utf-8'))
 
 # Converts an image (2D lists of tuples, RGBA int[0, 255]) into an sixel image that can be printed.
 # for black and white images, this should be near instant
 # for grayscale images, this should take less than a few seconds
-# for colored images, this can take up to a minute depending on the image size and the amount of different colors in the source image
-def img2sixels(image: list[list[tuple[int, int, int, int]]], COLOR_REGISTER_COUNT: Literal[16, 32, 64, 128, 256] = 256):
+# for colored images, this can take up to a minute or two (depending on the image size, the amount of different colors in the source image and the amount of required color registers)
+def img2sixels(image: _RGBAImage, COLOR_REGISTER_COUNT: Literal[16, 32, 64, 128, 256] = 256) -> str:
     width, height = len(image[0]), len(image)
     output = [f"\033P0;0;0q\"1;1;{width};{height}"]
     colors2str: dict[int, str] = {}
@@ -55,7 +63,6 @@ def img2sixels(image: list[list[tuple[int, int, int, int]]], COLOR_REGISTER_COUN
     
     sixel_cr = '$'
     sixel_crlf = '-'
-    sixel_repeat = '!'
     
     def packRGB(r: int, g: int, b: int) -> int:
         if (r, g, b) in RGB2color:
@@ -142,8 +149,6 @@ def img2sixels(image: list[list[tuple[int, int, int, int]]], COLOR_REGISTER_COUN
         yw6 = y * width * 6
         colors_to_fill = alt_colors[:1]
         colors_to_fill_hashmap = {colors_to_fill[0]}
-        max_y = min(y + 6, height) - 1
-        range_height = range(max_y, y - 1, -1)
         start_indicies = {}
         end_indicies = {}
         
@@ -207,3 +212,16 @@ def img2sixels(image: list[list[tuple[int, int, int, int]]], COLOR_REGISTER_COUN
         output.append(sixel_crlf)
     output.append("\033\\")
     return "".join(output)
+
+_parser = argparse.ArgumentParser()
+_parser.add_argument('filename', default='', nargs='?')
+_parser.add_argument('-r', '-cr', '--register-count', '--color-register-count', type=int, default=256, required=False, choices=[16, 32, 64, 128, 256])
+_parser.add_argument('-o', '--output-file', default='', required=False)
+
+_namespace = _parser.parse_args()
+if _namespace.filename:
+    import os
+    if _namespace.output_file:
+        from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file))
+    else:
+        print_image_from_path(os.path.abspath(_namespace.filename), _namespace.register_count)
