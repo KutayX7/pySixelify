@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 
-
+from typing import Literal
 
 
 def print_image_from_path(path: str, COLOR_REGISTER_COUNT: int = 256):
@@ -38,11 +38,10 @@ def print_image_from_path(path: str, COLOR_REGISTER_COUNT: int = 256):
 
 
 # Converts an image (2D lists of tuples, RGBA int[0, 255]) into an sixel image that can be printed.
-# COLOR_REGISTER_COUNT is an integer between 16 and 256 (inclusive); anything lesser or higher will likely to result in corruption.
 # for black and white images, this should be near instant
 # for grayscale images, this should take less than a few seconds
 # for colored images, this can take up to a minute depending on the image size and the amount of different colors in the source image
-def img2sixels(image: list[list[tuple[int, int, int, int]]], COLOR_REGISTER_COUNT: int = 256):
+def img2sixels(image: list[list[tuple[int, int, int, int]]], COLOR_REGISTER_COUNT: Literal[16, 32, 64, 128, 256] = 256):
     width, height = len(image[0]), len(image)
     output = [f"\033P0;0;0q\"1;1;{width};{height}"]
     colors2str: dict[int, str] = {}
