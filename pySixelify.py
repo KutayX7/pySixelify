@@ -41,15 +41,15 @@ def from_file_to_RGBImage(file_path: str) -> _RGBAImage:
 def print_image_from_path(path: str, COLOR_REGISTER_COUNT: int = 256):
     print(img2sixels(from_file_to_RGBImage(path), COLOR_REGISTER_COUNT))
 
-def from_file_to_file(input_path: str, output_path: str):
+def from_file_to_file(input_path: str, output_path: str, COLOR_REGISTER_COUNT: int = 256):
     with open(output_path, 'wb') as file:
-        file.write(img2sixels(from_file_to_RGBImage(input_path)).encode('utf-8'))
+        file.write(img2sixels(from_file_to_RGBImage(input_path), COLOR_REGISTER_COUNT).encode('utf-8'))
 
 # Converts an image (2D lists of tuples, RGBA int[0, 255]) into an sixel image that can be printed.
 # for black and white images, this should be near instant
 # for grayscale images, this should take less than a few seconds
 # for colored images, this can take up to a minute or two (depending on the image size, the amount of different colors in the source image and the amount of required color registers)
-def img2sixels(image: _RGBAImage, COLOR_REGISTER_COUNT: Literal[16, 32, 64, 128, 256] = 256) -> str:
+def img2sixels(image: _RGBAImage, COLOR_REGISTER_COUNT: int = 256) -> str:
     width, height = len(image[0]), len(image)
     output = [f"\033P0;0;0q\"1;1;{width};{height}"]
     colors2str: dict[int, str] = {}
@@ -222,6 +222,6 @@ _namespace = _parser.parse_args()
 if _namespace.filename:
     import os
     if _namespace.output_file:
-        from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file))
+        from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file), _namespace.register_count)
     else:
         print_image_from_path(os.path.abspath(_namespace.filename), _namespace.register_count)
