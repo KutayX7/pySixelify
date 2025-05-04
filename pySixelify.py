@@ -35,7 +35,7 @@ def _from_file_to_RGBImage(file_path: str) -> _RGBAImage:
     with PIL.Image.open(file_path) as image:
         image = image.convert("RGBA", colors=256)
         width, height = image.width, image.height
-        flat_pixels = list(image.getdata())
+        flat_pixels = list(image.getdata()) # type: ignore
         return [flat_pixels[i * width:(i + 1) * width] for i in range(height)]
 
 def print_image_from_path(path: str, *, register_count: int = 256):
@@ -62,11 +62,8 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
     colorMap: dict[int, int] = {}
     color2RGB: dict[int, tuple[int, int, int]] = {0: (0, 0, 0)}
     RGB2color: dict[tuple[int, int, int], int] = {(0, 0, 0): 0}
-    runlength2str = [str(i) for i in range(width+1)]
+    runlength2str = ['!' + str(i) for i in range(width+1)]
     mask2str = [chr(i + 63) for i in range(128)]
-    
-    sixel_cr = '$'
-    sixel_crlf = '-'
     
     def packRGB(r: int, g: int, b: int) -> int:
         if (r, g, b) in RGB2color:
@@ -77,7 +74,7 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
         return result
     
     # pack image
-    packed_image = []
+    packed_image: list[list[int]] = []
     for y in range(height):
         packed_image.append([])
         for x in range(width):
@@ -109,14 +106,15 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
         r, g, b = RGBs[i-1]
         rx, gx, bx = RGBs[i]
         ry, gy, by = RGBs[j]
-        dx = abs(rx-r) + abs(gx-g) + abs(bx-x)
-        dy = abs(ry-r) + abs(gy-g) + abs(by-x)
+        dx = abs(rx-r) + abs(gx-g) + abs(bx-b)
+        dy = abs(ry-r) + abs(gy-g) + abs(by-b)
         if dy > dx:
             RGBs[i] = (ry, gy, by)
             RGBs[j] = (rx, gx, bx)
     colors = [RGB2color[t] for t in RGBs]
-    alt_colors = colors[:register_count]
-    alt_RGB = RGBs[:register_count]
+    Rs = [c[0] for c in RGBs]
+    Gs = [c[1] for c in RGBs]
+    Bs = [c[2] for c in RGBs]
     for i in range(min(len(colors), register_count)):
         color = colors[i]
         r, g, b = RGBs[i]
@@ -126,15 +124,20 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
     if len(colors) > register_count:
         for i in range(register_count, len(colors)):
             color = colors[i]
-            r, g, b = RGBs[i]
-            closest = (0,0,0)
-            min_d = 4000000
-            for r2, g2, b2 in alt_RGB:
-                d = (r2-r)**2+(g2-g)**2+(b2-b)**2
-                if d < min_d:
-                    closest = (r2, g2, b2)
-                    min_d = d
-            colorMap[color] = RGB2color[closest]
+            r = Rs[i]
+            g = Gs[i]
+            b = Bs[i]
+            closest = 0
+            min_diff = 200000
+            for j in range(register_count):
+                r2 = Rs[j]
+                g2 = Gs[j]
+                b2 = Bs[j]
+                diff = (r2-r)**2+(g2-g)**2+(b2-b)**2
+                if diff <= min_diff:
+                    closest = j
+                    min_diff = diff
+            colorMap[color] = colors[closest]
     
     # convert colors according to the color palette
     for y in range(height):
@@ -142,7 +145,7 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
             packed_image[y][x] = colorMap[packed_image[y][x]]
     
     # flatten the packed image
-    flattened_image = []
+    flattened_image: list[int] = []
     for y in range(0, height, 6):
         for x in range(width):
             for i in range(y + 5, y - 1, -1):
@@ -151,25 +154,29 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
     # render
     for y in range(height//6):
         yw6 = y * width * 6
-        colors_to_fill = alt_colors[:1]
-        colors_to_fill_hashmap = {colors_to_fill[0]}
-        start_indicies = {}
-        end_indicies = {}
+        colors_to_fill: list[int] = list()
+        colors_to_fill_set: set[int] = set()
+        start_indicies: dict[int, int] = dict()
+        end_indicies: dict[int, int] = dict()
         
         # detect colors on the row
         for x in range(width * 6):
             c = flattened_image[yw6 + x]
-            if c in colors_to_fill_hashmap:
+            if c in colors_to_fill_set:
                 end_indicies[c] = x
             else:
                 end_indicies[c] = x
                 start_indicies[c] = x
-                colors_to_fill_hashmap.add(c)
-        start_indicies[colors_to_fill[0]] = start_indicies.get(colors_to_fill[0], width * 6)
-        end_indicies[colors_to_fill[0]] = end_indicies.get(colors_to_fill[0], start_indicies[colors_to_fill[0]] - 1)
-        colors_to_fill.pop()
-        for c in colors_to_fill_hashmap:
+                colors_to_fill_set.add(c)
+        
+        for c in colors_to_fill_set:
             colors_to_fill.append(c)
+        
+        if len(colors_to_fill) < 1:
+            colors_to_fill.append(colors[0])
+
+        start_indicies[colors_to_fill[0]] = 0
+        end_indicies[colors_to_fill[0]] = width * 6 - 1
         
         # draw row
         for c in colors_to_fill:
@@ -192,28 +199,30 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
                     run_length += 1
                 else:
                     maskStr = mask2str[last_mask]
-                    if run_length > 9:
+                    if run_length > 3:
                         while run_length > 255: # for compatibility (max allowed repetitions is unknown)
                             output.append(f'!255{maskStr}')
                             run_length -= 255
-                        output.append(f'!{runlength2str[run_length]}{maskStr}')
+                        output.append(runlength2str[run_length])
+                        output.append(maskStr)
                     else:
                         output.append(maskStr * run_length)
                     last_mask = mask
                     run_length = 1
             maskStr = mask2str[last_mask]
-            if run_length > 9:
+            if run_length > 3:
                 while run_length > 255: # compatibility
                     output.append(f'!255{maskStr}')
                     run_length -= 255
-                output.append(f'!{runlength2str[run_length]}{maskStr}')
+                output.append(runlength2str[run_length])
+                output.append(maskStr)
             else:
                 output.append(maskStr * run_length)
             if end_index < width:
                 output.append(chr(63) * (width - end_index))
             if start_index < width:
-                output.append(sixel_cr)
-        output.append(sixel_crlf)
+                output.append('$')
+        output.append('-')
     output.append("\033\\")
     return "".join(output)
 
