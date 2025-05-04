@@ -53,7 +53,10 @@ def from_file_to_file(input_path: str, output_path: str, *, register_count: int 
 # for black and white images, this should be near instant
 # for grayscale images, this should take less than a few seconds
 # for colored images, this can take up to a minute or two (depending on the image size, the amount of different colors in the source image and the amount of required color registers)
+# EXPERIMENTAL: setting `register_count` argument to anything less than 2, outputs a full color image
 def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
+    if register_count < 2:
+        return _img2sixels_full_color(image)
     width, height = len(image[0]), len(image)
     output = [f"\033P0;0;0q\"1;1;{width};{height}"]
     colors2str: dict[int, str] = {}
@@ -226,14 +229,151 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
     output.append("\033\\")
     return "".join(output)
 
+# !EXPERIMENTAL!
+# this is supposed to render a full color sixel image without any register limits
+# a single register is reused for every color
+# may not work with every sixel terminal
+# may not work if the image is too big or has too many details
+# this is likely to work slower than the normal method (but exceptions can happen)
+# TODO: find a way to compress the output even further (which is necessary for this to work better with complex images)
+# TODO: find edge cases (if any) and make sure they don't cause issues
+def _img2sixels_full_color(image: _RGBAImage) -> str:
+    width, height = len(image[0]), len(image)
+    output = [f"\033P0;0;0q\"1;1;{width};{height}#0"]
+    colors: list[int] = []
+    color2RGB: dict[int, tuple[int, int, int]] = {0: (0, 0, 0)}
+    RGB2color: dict[tuple[int, int, int], int] = {(0, 0, 0): 0}
+    mask2str = [chr(i + 63) for i in range(128)]
+    
+    def packRGB(r: int, g: int, b: int) -> int:
+        if (r, g, b) in RGB2color:
+            return RGB2color[(r, g, b)]
+        result = int(r * 65536 + g * 256 + b)
+        color2RGB[result] = (r, g, b)
+        RGB2color[(r, g, b)] = result
+        return result
+    
+    def color2str(color: int) -> str:
+        r, g, b = color2RGB[color]
+        return f'#0;2;{int(r*100/255)};{int(g*100/255)};{int(b*100/255)}'
+
+    def repeatMask(mask: int, run_length: int):
+        s = mask2str[mask]
+        if run_length < 4:
+            output.append(s * run_length)
+            return
+        while run_length > 255: # for compatibility (max allowed repetitions is unknown)
+            output.append(f'!255{s}')
+            run_length -= 255
+        if run_length < 4:
+            output.append(s * run_length)
+            return
+        output.append(f'!{run_length}{s}')
+
+    # pack image
+    packed_image: list[list[int]] = []
+    for y in range(height):
+        packed_image.append([])
+        for x in range(width):
+            (r, g, b, a) = image[y][x]
+            if a < 1:
+                r, g, b = int(r * a), int(g * a), int(b * a)
+            packed_image[y].append(packRGB(r, g, b))
+    while (height % 6):
+        height = height + 1
+        packed_image.append([0] * width)
+    
+    # flatten the packed image
+    flattened_image: list[int] = []
+    for y in range(0, height, 6):
+        for x in range(width):
+            for i in range(y + 5, y - 1, -1):
+                flattened_image.append(packed_image[i][x])
+    
+    # render
+    for y in range(height//6):
+        yw6 = y * width * 6
+        colors_to_fill: list[int] = list()
+        colors_to_fill_set: set[int] = set()
+        start_indicies: dict[int, int] = dict()
+        end_indicies: dict[int, int] = dict()
+        
+        # detect colors on the row
+        for x in range(width * 6):
+            c = flattened_image[yw6 + x]
+            if c in colors_to_fill_set:
+                end_indicies[c] = x
+            else:
+                end_indicies[c] = x
+                start_indicies[c] = x
+                colors_to_fill_set.add(c)
+        
+        for c in colors_to_fill_set:
+            colors_to_fill.append(c)
+        
+        if len(colors_to_fill) < 1:
+            colors_to_fill.append(colors[0])
+        
+        worst_rl = 0
+        worst_color = colors_to_fill[0]
+        for c in start_indicies:
+            rl = 1 + end_indicies[c] - start_indicies[c]
+            if rl > worst_rl:
+                worst_rl = rl
+                worst_color = c
+        
+        # early row fill
+        c = worst_color
+        output.append(color2str(c))
+        repeatMask(63, width)
+        output.append('$')
+
+        # draw row
+        for c in colors_to_fill:
+            if c == worst_color:
+                continue
+            start_index = int(start_indicies[c] / 6)
+            end_index = int(end_indicies[c] / 6) + 1
+            index = yw6 + start_index * 6
+            output.append(color2str(c))
+            last_mask = 0
+            run_length = start_index * (end_index > start_index)
+            for x in range(start_index, end_index):
+                mask  = (flattened_image[index    ] == c) * 32
+                mask += (flattened_image[index + 1] == c) * 16
+                mask += (flattened_image[index + 2] == c) * 8
+                mask += (flattened_image[index + 3] == c) * 4
+                mask += (flattened_image[index + 4] == c) * 2
+                mask += (flattened_image[index + 5] == c)
+                index += 6
+                if last_mask == mask:
+                    run_length += 1
+                else:
+                    repeatMask(last_mask, run_length)
+                    last_mask = mask
+                    run_length = 1
+            repeatMask(last_mask, run_length)
+            if end_index < width:
+                repeatMask(0, (width - end_index))
+            if start_index < width:
+                output.append('$')
+        output.append('-')
+    output.append("\033\\")
+    return "".join(output)
+
+
 if __name__ == '__main__':
     _parser = argparse.ArgumentParser()
     _parser.add_argument('filename', default='', nargs='?')
-    _parser.add_argument('-r', '-cr', '--register-count', '--color-register-count', type=int, default=256, required=False, choices=[16, 32, 64, 128, 256])
+    _parser.add_argument('-r', '-cr', '--register-count', '--color-register-count', type=int, default=256, required=False, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256])
     _parser.add_argument('-o', '--output-file', default='', required=False)
+    _parser.add_argument('-s', '--silent', action='store_true', required=False, default=False)
     _namespace = _parser.parse_args()
     if _namespace.filename:
         import os
+        if not _namespace.silent:
+            if _namespace.register_count == 1:
+                print("WARNING: You're using an experimental feature `register_count==1`. If things go wrong, please report them at \"https://github.com/KutayX7/pySixelify/issues\"")
         if _namespace.output_file:
             from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file), register_count=_namespace.register_count)
         else:
