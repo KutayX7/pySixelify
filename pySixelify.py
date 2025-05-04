@@ -213,15 +213,15 @@ def img2sixels(image: _RGBAImage, COLOR_REGISTER_COUNT: int = 256) -> str:
     output.append("\033\\")
     return "".join(output)
 
-_parser = argparse.ArgumentParser()
-_parser.add_argument('filename', default='', nargs='?')
-_parser.add_argument('-r', '-cr', '--register-count', '--color-register-count', type=int, default=256, required=False, choices=[16, 32, 64, 128, 256])
-_parser.add_argument('-o', '--output-file', default='', required=False)
-
-_namespace = _parser.parse_args()
-if _namespace.filename:
-    import os
-    if _namespace.output_file:
-        from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file), _namespace.register_count)
-    else:
-        print_image_from_path(os.path.abspath(_namespace.filename), _namespace.register_count)
+if __name__ == '__main__':
+    _parser = argparse.ArgumentParser()
+    _parser.add_argument('filename', default='', nargs='?')
+    _parser.add_argument('-r', '-cr', '--register-count', '--color-register-count', type=int, default=256, required=False, choices=[16, 32, 64, 128, 256])
+    _parser.add_argument('-o', '--output-file', default='', required=False)
+    _namespace = _parser.parse_args()
+    if _namespace.filename:
+        import os
+        if _namespace.output_file:
+            from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file), _namespace.register_count)
+        else:
+            print_image_from_path(os.path.abspath(_namespace.filename), _namespace.register_count)
