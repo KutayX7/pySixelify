@@ -23,11 +23,11 @@
 # https://github.com/KutayX7/pySixelify
 
 import argparse
-from typing import Literal, List, Tuple
+from typing import List, Tuple
 
 type _RGBAImage = List[List[Tuple[int, int, int, int]]]
 
-def from_file_to_RGBImage(file_path: str) -> _RGBAImage:
+def _from_file_to_RGBImage(file_path: str) -> _RGBAImage:
     try:
         import PIL.Image
     except:
@@ -38,18 +38,22 @@ def from_file_to_RGBImage(file_path: str) -> _RGBAImage:
         flat_pixels = list(image.getdata())
         return [flat_pixels[i * width:(i + 1) * width] for i in range(height)]
 
-def print_image_from_path(path: str, COLOR_REGISTER_COUNT: int = 256):
-    print(img2sixels(from_file_to_RGBImage(path), COLOR_REGISTER_COUNT))
+def print_image_from_path(path: str, *, register_count: int = 256):
+    image = _from_file_to_RGBImage(path)
+    sixels = img2sixels(image, register_count=register_count)
+    print(sixels)
 
-def from_file_to_file(input_path: str, output_path: str, COLOR_REGISTER_COUNT: int = 256):
+def from_file_to_file(input_path: str, output_path: str, *, register_count: int = 256):
     with open(output_path, 'wb') as file:
-        file.write(img2sixels(from_file_to_RGBImage(input_path), COLOR_REGISTER_COUNT).encode('utf-8'))
+        image = _from_file_to_RGBImage(input_path)
+        sixels = img2sixels(image, register_count=register_count)
+        file.write(sixels.encode('utf-8'))
 
 # Converts an image (2D lists of tuples, RGBA int[0, 255]) into an sixel image that can be printed.
 # for black and white images, this should be near instant
 # for grayscale images, this should take less than a few seconds
 # for colored images, this can take up to a minute or two (depending on the image size, the amount of different colors in the source image and the amount of required color registers)
-def img2sixels(image: _RGBAImage, COLOR_REGISTER_COUNT: int = 256) -> str:
+def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
     width, height = len(image[0]), len(image)
     output = [f"\033P0;0;0q\"1;1;{width};{height}"]
     colors2str: dict[int, str] = {}
@@ -111,16 +115,16 @@ def img2sixels(image: _RGBAImage, COLOR_REGISTER_COUNT: int = 256) -> str:
             RGBs[i] = (ry, gy, by)
             RGBs[j] = (rx, gx, bx)
     colors = [RGB2color[t] for t in RGBs]
-    alt_colors = colors[:COLOR_REGISTER_COUNT]
-    alt_RGB = RGBs[:COLOR_REGISTER_COUNT]
-    for i in range(min(len(colors), COLOR_REGISTER_COUNT)):
+    alt_colors = colors[:register_count]
+    alt_RGB = RGBs[:register_count]
+    for i in range(min(len(colors), register_count)):
         color = colors[i]
         r, g, b = RGBs[i]
         colorMap[color] = color
         output.append(f'#{i};2;{int(r*100/255)};{int(g*100/255)};{int(b*100/255)}')
         colors2str[color] = f'#{i}'
-    if len(colors) > COLOR_REGISTER_COUNT:
-        for i in range(COLOR_REGISTER_COUNT, len(colors)):
+    if len(colors) > register_count:
+        for i in range(register_count, len(colors)):
             color = colors[i]
             r, g, b = RGBs[i]
             closest = (0,0,0)
@@ -222,6 +226,6 @@ if __name__ == '__main__':
     if _namespace.filename:
         import os
         if _namespace.output_file:
-            from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file), _namespace.register_count)
+            from_file_to_file(os.path.abspath(_namespace.filename), os.path.abspath(_namespace.output_file), register_count=_namespace.register_count)
         else:
-            print_image_from_path(os.path.abspath(_namespace.filename), _namespace.register_count)
+            print_image_from_path(os.path.abspath(_namespace.filename), register_count=_namespace.register_count)
