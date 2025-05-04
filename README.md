@@ -8,7 +8,7 @@ A relatively fast SIXEL converter utility, written purely in Python.
 * A terminal that support SIXEL images.
   * (**It's also optional.** Not needed if you don't need to see the results.)
   * VSCode's terminal (***tested***, fully functional, may need some configuration)
-  * Windows 11 Terminal (***tested***, no unlimited colors, may need some configuration)
+  * Windows 11 Terminal (***tested***, mostly functional, no register reuse, may need some configuration)
   * XTerm
   * mlterm
   * WezTerm
