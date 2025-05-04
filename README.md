@@ -1,11 +1,22 @@
 # pySixelify
 A relatively fast SIXEL converter utility, written purely in Python.
-The only dependency is pillow, and that's optional.
 
 ## Dependencies
 * `pillow`: Python Imaging Library fork. `pip install pillow`
   * **It's optional.** You only need it if you need to use this as a command line tool
   * or if you use the functions that need to load an image from a file.
+* A terminal that support SIXEL images.
+  * (**It's also optional.** Not needed if you don't need to see the results.)
+  * VSCode's terminal (***tested***, fully functional, may need some configuration)
+  * Windows 11 Terminal (***tested***, no unlimited colors, may need some configuration)
+  * XTerm
+  * mlterm
+  * WezTerm
+  * Konsole
+  * Terminology
+  * Exoterm
+  * Gnuplot
+  
 
 ## Comamnd line arguments
 ```
