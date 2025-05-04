@@ -60,8 +60,8 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
     colors: list[int] = []
     colorCounts: dict[int, int] = {}
     colorMap: dict[int, int] = {}
-    color2RGB: dict[int, tuple[int, int, int]] = {}
-    RGB2color: dict[tuple[int, int, int], int] = {}
+    color2RGB: dict[int, tuple[int, int, int]] = {0: (0, 0, 0)}
+    RGB2color: dict[tuple[int, int, int], int] = {(0, 0, 0): 0}
     runlength2str = [str(i) for i in range(width+1)]
     mask2str = [chr(i + 63) for i in range(128)]
     
@@ -83,9 +83,9 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256) -> str:
         for x in range(width):
             (r, g, b, a) = image[y][x]
             if a < 1:
-                r, g, b = 0, 0, 0
+                r, g, b = int(r * a), int(g * a), int(b * a)
             packed_image[y].append(packRGB(r, g, b))
-    while (height % 6) > 0:
+    while (height % 6):
         height = height + 1
         packed_image.append([0] * width)
     
