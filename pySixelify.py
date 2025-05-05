@@ -77,27 +77,6 @@ def _to_RGB(color: _Color) -> tuple[int, int, int]:
     G = (color >> 8) % 256
     return (R, G, B)
 
-def _RGB_distance(r1: int, g1: int, b1: int, r2: int, g2: int, b2: int) -> int:
-    return (r1-r2)**2 + (g1-g2)**2 + (b1-b2)**2
-
-def _color_distance(c1: _Color, c2: _Color) -> int:
-    return _RGB_distance(*_to_RGB(c1), *_to_RGB(c2))
-
-def _avg_colors(color_list: list[_Color]) -> _Color:
-    tr: int = 0
-    tg: int = 0
-    tb: int = 0
-    n = len(color_list)
-    for color in color_list:
-        r, g, b = _to_RGB(color)
-        tr += r
-        tg += g
-        tb += b
-    ar = int(tr / n)
-    ag = int(tg / n)
-    ab = int(tb / n)
-    return _to_color(ar, ag, ab)
-
 def _avg_RGBs(rgb_list: list[tuple[int, int, int]]) -> tuple[float, float, float]:
     tr: int = 0
     tg: int = 0
