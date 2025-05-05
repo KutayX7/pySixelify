@@ -31,6 +31,10 @@ A relatively fast SIXEL converter utility, written purely in Python.
                                   which may not work with every sixel terminal.
                                   It's experimental so please give feedback if you do use it <3
           -s, --silent : Ignores warning mesasges (if any).
+         -p, --palette : Sets the palette generator algorithm.
+                         Choices: QPUNM, OTFCD.
+                         QPUNM is the default algorithm, usually high quality
+                         OTFCD is the new, blazingly fast algorithm; but provides lower quality
 ```
 
 ## Example usage (as a command line tool)
