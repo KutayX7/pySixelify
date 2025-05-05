@@ -32,3 +32,11 @@ A relatively fast SIXEL converter utility, written purely in Python.
                          It's experimental so please give feedback if you use it <3
           -s, --silent : Ignores warning mesasges (if any).
 ```
+
+## Example usage (as a command line tool)
+* Read "test.png" and print it to the terminal
+  * `python pySixelify "test.png"`
+* Read "test.png" and save it to "test.sixel"
+  * `python pySixelify "test.png" -o "test.sixel"`
+* Read "test.png" and print it to the terminal, with only 16 colors
+  * `python pySixelify "test.png" -r 16`
