@@ -46,9 +46,9 @@ A relatively fast SIXEL converter utility, written purely in Python.
   * `python pySixelify "test.png" -r 16`
 
 ## TO-DO
-* More efficient palette generators
-* Remove the `pillow` dependency
+* Multiprocessing (only if available; it won't be a strong dependency)
+* More efficient palette generators (if possible)
 * Realtime SIXEL conversion
 * Video player
-* ...
 * Play Bad Apple on it in real-time at minimum 60 FPS
+* Remove the `pillow` dependency
