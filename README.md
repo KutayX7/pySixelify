@@ -44,3 +44,11 @@ A relatively fast SIXEL converter utility, written purely in Python.
   * `python pySixelify "test.png" -o "test.sixel"`
 * Read "test.png" and print it to the terminal, with only 16 colors
   * `python pySixelify "test.png" -r 16`
+
+## TO-DO
+* More efficient palette generators
+* Remove the `pillow` dependency
+* Realtime SIXEL conversion
+* Video player
+* ...
+* Play Bad Apple on it in real-time at minimum 60 FPS
