@@ -28,13 +28,16 @@ A relatively fast SIXEL converter utility, written purely in Python.
                          Choices: 1, 2, 4, 8, 16, 32, 64, 128, or 256 (default).
                          WARNING: Setting it to 1 is a special case.
                                   When set to 1, it will (re)use a single register to render EVERY color,
-                                  which may not work with every sixel terminal.
+                                  which may not work with most terminals.
                                   It's experimental so please give feedback if you do use it <3
           -s, --silent : Ignores warning mesasges (if any).
          -p, --palette : Sets the palette generator algorithm.
                          Choices: QPUNM, OTFCD.
+                         These only apply if there are more colors in the image
+                         than there are color registers.
                          QPUNM is the default algorithm.
-                         OTFCD is faster at the cost of quality.
+                         OTFCD is newer and faster.
+                         Can't choose? Try both! You will be surprised.
 ```
 
 ## Example usage (as a command line tool)
@@ -46,9 +49,17 @@ A relatively fast SIXEL converter utility, written purely in Python.
   * `python pySixelify "test.png" -r 16`
 
 ## TO-DO
-* ~~Multiprocessing~~
+* ~~Multiprocessing~~ (done)
 * More efficient palette generators (if possible)
+* Global interpreter lock (GIL) detection
 * Realtime SIXEL conversion
 * Video player
 * Play Bad Apple on it in real-time at minimum 60 FPS
-* Remove the `pillow` dependency
+* ~~Remove the `pillow` dependency~~ (impractical for now)
+
+## Known issues
+* Doesn't work on WASI (`concurrent.futures` library is not available)
+* No multiprocessing on mobile platforms (`multiprocessing` library is not available)
+* QPUNM loses information of low frequency (but important) colors
+* OTFCD doesn't utilize every register and sometimes assigns wrong colors
+* Pure Python is too slow for real-time conversion
