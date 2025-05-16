@@ -29,7 +29,11 @@ from typing import List, Set, Tuple, Dict, Literal
 from itertools import repeat
 
 type PaletteGenerationAlgorithm = Literal['QPUNM', 'OTFCD']
-type _RGBAImage = List[List[Tuple[int, int, int, int]]]
+type _RGBTuple = Tuple[int, int, int]
+type _RGBFloatTuple = Tuple[float, float, float]
+type _RGBATuple = Tuple[int, int, int, int]
+type _RGBImage = List[List[_RGBTuple]]
+type _RGBAImage = List[List[_RGBATuple]]
 type _Color = int
 type _ColorList = List[_Color]
 type _ColorSet = Set[_Color]
@@ -43,13 +47,14 @@ type _1DImageBytes = bytearray
 type _2DImage = List[List[_Color]]
 type _Mask = int
 
+type _OctreeColorNode = list[_OctreeColorNode|_RGBTuple]
+
 DEFAULT_PALETTE_GENERATION_ALGORITHM: PaletteGenerationAlgorithm = 'QPUNM'
 _QPUNM_CHUNK_SIZE: int = 4096
 _RENDERING_CHUNK_SIZE: int = 1
 
 _mask2byte = [bytes([i + 63]) for i in range(64)]
 _mask2str = [chr(i + 63) for i in range(64)]
-_runlength2str = ['!' + str(i) for i in range(256)]
 _runlength2bytes = [b'!' + str(i).encode(encoding='ascii') for i in range(256)]
 
 def _get_executor() -> concurrent.futures.Executor:
@@ -84,7 +89,7 @@ def from_file_to_file(input_path: str, output_path: str, *, register_count: int 
 def _to_color(r: int, g: int, b: int) -> _Color:
     return (r << 16) + (g << 8) + b
 
-def _to_RGB(color: _Color) -> tuple[int, int, int]:
+def _to_RGB(color: _Color) -> _RGBTuple:
     B = color % 256
     R = color >> 16
     G = (color >> 8) % 256
@@ -97,18 +102,7 @@ def _get_G(color: _Color) -> int:
 def _get_B(color: _Color) -> int:
     return color % 256
 
-def _avg_RGBs(rgb_list: list[tuple[int, int, int]]) -> tuple[float, float, float]:
-    tr: int = 0
-    tg: int = 0
-    tb: int = 0
-    n = len(rgb_list)
-    for r, g, b in rgb_list:
-        tr += r
-        tg += g
-        tb += b
-    return (tr/n, tg/n, tb/n)
-
-def _round_RGB(r: float, g: float, b: float) -> tuple[int, int, int]:
+def _round_RGB(r: float, g: float, b: float) -> _RGBTuple:
     return (int(r + 0.5), int(g + 0.5), int(b + 0.5))
 
 def _repeat_mask(mask: _Mask, run_length: int, output: _OutputStream):
@@ -172,10 +166,10 @@ def _remap_2d_image(image: _2DImage, colorMap: _ColorMap):
             image[y][x] = colorMap[image[y][x]]
 
 # full palette, infinite registers
-def _FPIR(colorCounts: _ColorCounter, register_count: int) -> _ColorMap:
+def _FPIR(colorCounts: _ColorCounter, register_count: int = 256) -> _ColorMap:
     return {c: c for c in colorCounts}
 
-def _find_closest(color: int, Rs: list[int], Gs: list[int], Bs: list[int]) -> tuple[int, int]:
+def _find_closest(color: int, Rs: list[int], Gs: list[int], Bs: list[int]) -> Tuple[_Color, _Color]:
     r, g, b = _to_RGB(color)
     closest = 0
     min_diff = 400000
@@ -231,78 +225,106 @@ def _QPUNM(color_counts: _ColorCounter, register_count: int) -> _ColorMap:
             colorMap[color] = colors[closest]
     return colorMap
 
-# type hell xD
-# TODO: Fix type annotations
-# TODO: Make this actually give decent results
+def _avg_RGBs(rgb_list: _OctreeColorNode) -> _RGBFloatTuple:
+    tr: int = 0
+    tg: int = 0
+    tb: int = 0
+    n = len(rgb_list)
+    for r, g, b in rgb_list:
+        tr += r # type: ignore
+        tg += g # type: ignore
+        tb += b # type: ignore
+    return (tr/n, tg/n, tb/n) # type: ignore
+
 # OctTree Fair Color Division
 def _OTFCD(colorCounts: _ColorCounter, register_count: int) -> _ColorMap:
     colorMap: _ColorMap = {}
-    RGBs = [_to_RGB(color) for color in colorCounts]
-    root = []
+    RGBs: List[_RGBTuple] = [_to_RGB(color) for color in colorCounts]
+    root: _OctreeColorNode = []
+    node_queue: Queue[_OctreeColorNode] = Queue()
+    remaining_color_queue: Queue[_Color] = Queue()
+    remaining_register_count: int = register_count
+    backup_color: _Color = max(colorCounts, key=lambda color: colorCounts[color])
+    color_count: int = len(colorCounts)
+    division_threshold: int = int(color_count * 256 * 256 * 2 / register_count ** 3)
 
-    def is_leaf_node(node: list[object]):
+    def unpack_node(node: _OctreeColorNode|_RGBFloatTuple) -> _RGBTuple:
+        r, g, b = node
+        return r, g, b # type: ignore
+
+    def is_leaf_node(node: _OctreeColorNode) -> bool:
         if len(node):
             return isinstance(node[0], tuple)
         return True
 
-    def is_divisible(node: list[object]):
-        return is_leaf_node(node) and len(node) > register_count * 8
+    def is_divisible(node: _OctreeColorNode) -> bool:
+        return is_leaf_node(node) and len(node) > division_threshold
     
-    def divide(node, depth=1): # type: ignore
+    def divide(node: _OctreeColorNode, depth: int = 1) -> int:
         if depth > 3:
             return depth
-        ar, ag, ab = _avg_RGBs(node) # type: ignore
-        buckets = [[] for _ in range(8)] # type: ignore
-        for r, g, b in node: # type: ignore
+        ar, ag, ab = _avg_RGBs(node)
+        buckets: List[_OctreeColorNode] = [[] for _ in range(8)]
+        for item in node:
+            r, g, b = unpack_node(item)
             index = 4 if r >= ar else 0
             if g >= ag:
                 index += 2
             if b >= ab:
                 index += 1
-            buckets[index].append((r, g, b)) # type: ignore
-        node.clear() # type: ignore
-        node.extend(buckets) # type: ignore
-        node.append(_round_RGB(ar, ag, ab)) # type: ignore
+            buckets[index].append((r, g, b))
+        node.clear()
+        node.extend(buckets)
+        node.append(_round_RGB(ar, ag, ab))
         max_depth = depth
-        for child in node[:8]: # type: ignore
-            if is_divisible(child): # type: ignore
-                max_depth = max(max_depth, divide(child, depth+1)) # type: ignore
-            if is_leaf_node(child): # type: ignore
-                if len(child): # type: ignore
-                    child.append(_round_RGB(*_avg_RGBs(child))) # type: ignore
+        for child in buckets:
+            if is_divisible(child):
+                max_depth = max(max_depth, divide(child, depth+1))
+            if is_leaf_node(child):
+                if len(child):
+                    child.append(_round_RGB(*_avg_RGBs(child)))
                 else:
-                    child.append(node[8]) # type: ignore
+                    child.append(node[8])
         return max_depth
     
-    node_queue = Queue() # type: ignore
-    root.extend(RGBs) # type: ignore
-    divide(root) # type: ignore
-    node_queue.put_nowait(root) # type: ignore
-    remaining_register_count = register_count
-    backup_color = 0 # type: ignore
+    root.extend(RGBs)
+    divide(root)
+    node_queue.put_nowait(root)
 
     while node_queue.qsize():
-        node = node_queue.get_nowait() # type: ignore
-        ar, ag, ab = node[len(node)-1] # type: ignore
-        avgc = _to_color(ar, ag, ab) # type: ignore
-        if is_leaf_node(node): # type: ignore
+        node: _OctreeColorNode = node_queue.get_nowait()
+        ar, ag, ab = unpack_node(node[len(node)-1])
+        avgc = _to_color(ar, ag, ab)
+        if is_leaf_node(node):
             if avgc not in colorMap:
-                if remaining_register_count and (len(node) > 1): # type: ignore
+                if remaining_register_count > 0 and (len(node) > 1):
                     colorMap[avgc] = avgc
                     remaining_register_count -= 1
-                    backup_color = avgc # type: ignore
+                    backup_color = avgc
                 else:
                     avgc = backup_color
-            for i in range(len(node)-1): # type: ignore
-                r, g, b = node[i] # type: ignore
-                color = _to_color(r, g, b) # type: ignore
+            for child in node[:-1]:
+                color = _to_color(*unpack_node(child))
                 if color not in colorMap:
                     colorMap[color] = colorMap[avgc]
+                    remaining_color_queue.put_nowait(color)
         else:
-            for child in node[:8]: # type: ignore
-                node_queue.put_nowait(child) # type: ignore
+            if remaining_register_count == 0:
+                for child in node[:8]:
+                    if isinstance(child, list):
+                        child[len(child)-1] = _to_RGB(avgc)
+            for child in node[:8]:
+                if isinstance(child, list):
+                    node_queue.put_nowait(child)
             if avgc in colorMap:
                 backup_color = colorMap[avgc]
+
+    if remaining_register_count > register_count:
+        while remaining_register_count > 0 and remaining_color_queue.qsize() > 0:
+            color: _Color = remaining_color_queue.get_nowait()
+            if colorMap[color] != color:
+                colorMap[color] = color
+                remaining_register_count -= 1
     return colorMap
 
 def _repeat_mask_bytes(mask: int, run_length: int) -> bytearray:
