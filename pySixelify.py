@@ -23,26 +23,46 @@
 # https://github.com/KutayX7/pySixelify
 
 import argparse
+import concurrent.futures
 from queue import Queue
-from typing import List, Tuple, Dict, Literal, Any
-from functools import cache
+from typing import List, Set, Tuple, Dict, Literal
+from itertools import repeat
 
 type PaletteGenerationAlgorithm = Literal['QPUNM', 'OTFCD']
-type _RGBAImage = List[List[Tuple[int, int, int, int]]]
+type _RGBTuple = Tuple[int, int, int]
+type _RGBFloatTuple = Tuple[float, float, float]
+type _RGBATuple = Tuple[int, int, int, int]
+type _RGBImage = List[List[_RGBTuple]]
+type _RGBAImage = List[List[_RGBATuple]]
 type _Color = int
+type _ColorList = List[_Color]
+type _ColorSet = Set[_Color]
 type _ColorMap = Dict[_Color, _Color]
 type _ColorCounter = Dict[_Color, int]
 type _Color2strMap = Dict[_Color, str]
+type _Color2bytesMap = Dict[_Color, bytes]
 type _OutputStream = List[str]
 type _1DImage = List[_Color]
+type _1DImageBytes = bytearray
 type _2DImage = List[List[_Color]]
 type _Mask = int
-type _kwargs = Dict[str, Any]
+
+type _OctreeColorNode = list[_OctreeColorNode|_RGBTuple]
 
 DEFAULT_PALETTE_GENERATION_ALGORITHM: PaletteGenerationAlgorithm = 'QPUNM'
+_QPUNM_CHUNK_SIZE: int = 4096
+_RENDERING_CHUNK_SIZE: int = 1
 
+_mask2byte = [bytes([i + 63]) for i in range(64)]
 _mask2str = [chr(i + 63) for i in range(64)]
-_runlength2str = ['!' + str(i) for i in range(256)]
+_runlength2bytes = [b'!' + str(i).encode(encoding='ascii') for i in range(256)]
+
+def _get_executor() -> concurrent.futures.Executor:
+    try:
+        return concurrent.futures.ProcessPoolExecutor()
+    except:
+        return concurrent.futures.ThreadPoolExecutor()
+_executor = _get_executor()
 
 def _from_file_to_RGBImage(file_path: str) -> _RGBAImage:
     try:
@@ -66,32 +86,26 @@ def from_file_to_file(input_path: str, output_path: str, *, register_count: int 
         sixels = img2sixels(image, register_count=register_count, palette_generation_algorithm=palette_generation_algorithm)
         file.write(sixels.encode('utf-8'))
 
-@cache
 def _to_color(r: int, g: int, b: int) -> _Color:
     return (r << 16) + (g << 8) + b
 
-@cache
-def _to_RGB(color: _Color) -> tuple[int, int, int]:
+def _to_RGB(color: _Color) -> _RGBTuple:
     B = color % 256
     R = color >> 16
     G = (color >> 8) % 256
     return (R, G, B)
 
-def _avg_RGBs(rgb_list: list[tuple[int, int, int]]) -> tuple[float, float, float]:
-    tr: int = 0
-    tg: int = 0
-    tb: int = 0
-    n = len(rgb_list)
-    for r, g, b in rgb_list:
-        tr += r
-        tg += g
-        tb += b
-    return (tr/n, tg/n, tb/n)
+def _get_R(color: _Color) -> int:
+    return color >> 16
+def _get_G(color: _Color) -> int:
+    return (color >> 8) % 256
+def _get_B(color: _Color) -> int:
+    return color % 256
 
-def _round_RGB(r: float, g: float, b: float) -> tuple[int, int, int]:
+def _round_RGB(r: float, g: float, b: float) -> _RGBTuple:
     return (int(r + 0.5), int(g + 0.5), int(b + 0.5))
 
-def _repeatMask(mask: _Mask, run_length: int, output: _OutputStream):
+def _repeat_mask(mask: _Mask, run_length: int, output: _OutputStream):
     s = _mask2str[mask]
     if run_length < 4:
         output.append(s * run_length)
@@ -115,15 +129,25 @@ def _generate_color_map(colorCounts: _ColorCounter, register_count: int, algorit
         return _FPIR(colorCounts, register_count)
     raise Exception(f'Unknown algorithm "{algorithm}"')
 
-def _stringify_color_map(colorMap: _ColorMap, output: _OutputStream) -> _Color2strMap:
-    result: _Color2strMap = dict()
+def _bytify_color_map(colorMap: _ColorMap, output: _OutputStream) -> _Color2bytesMap:
+    result: _Color2bytesMap = dict()
     register_index = 0
-    for color in list(colorMap.values()):
-        if color not in result:
-            r, g, b = _to_RGB(color)
-            output.append(f'#{register_index};2;{int(r*100/255)};{int(g*100/255)};{int(b*100/255)}')
-            result[color] = f'#{register_index}'
-            register_index += 1
+    remapping: dict[_Color, int] = dict()
+    for color in list(set(colorMap.values())):
+        r, g, b = _to_RGB(color)
+        output.append(f'#{register_index};2;{int(r*100/255)};{int(g*100/255)};{int(b*100/255)}')
+        result[register_index] = f'#{register_index}'.encode(encoding='ascii')
+        remapping[color] = register_index
+        register_index += 1
+    for color in list(colorMap.keys()):
+        to_color = colorMap[color]
+        if to_color in remapping:
+            colorMap[color] = remapping[to_color]
+    for color in list(remapping.keys()):
+        colorMap[color] = remapping[color]
+    for i in range(256):
+        if i not in colorMap:
+            colorMap[i] = 0
     return result
 
 def _stringify_0_color_map(colorMap: _ColorMap) -> _Color2strMap:
@@ -142,126 +166,260 @@ def _remap_2d_image(image: _2DImage, colorMap: _ColorMap):
             image[y][x] = colorMap[image[y][x]]
 
 # full palette, infinite registers
-def _FPIR(colorCounts: _ColorCounter, register_count: int) -> _ColorMap:
+def _FPIR(colorCounts: _ColorCounter, register_count: int = 256) -> _ColorMap:
     return {c: c for c in colorCounts}
 
+def _find_closest(color: int, Rs: list[int], Gs: list[int], Bs: list[int]) -> Tuple[_Color, _Color]:
+    r, g, b = _to_RGB(color)
+    closest = 0
+    min_diff = 400000
+    for j in range(len(Bs)):
+        r2 = Rs[j]
+        g2 = Gs[j]
+        b2 = Bs[j]
+        rd = r2-r
+        gd = g2-g
+        bd = b2-b
+        diff = rd*rd + gd*gd + bd*bd
+        if diff <= min_diff:
+            closest = j
+            min_diff = diff
+    return color, closest
+
 # Quadratic Push Up, Nearest Match
-def _QPUNM(colorCounts: _ColorCounter, register_count: int) -> _ColorMap:
+def _QPUNM(color_counts: _ColorCounter, register_count: int) -> _ColorMap:
     colorMap: _ColorMap = {}
-    colors = [c for c in colorCounts]
-    colors.sort(reverse=True, key=lambda e: colorCounts[e])
-    RGBs = [_to_RGB(c) for c in colors]
+    colors: _ColorList = [c for c in color_counts]
+    colors.sort(reverse=True, key=lambda e: color_counts[e])
+    Rs: list[int] = [_get_R(c) for c in colors]
+    Gs: list[int] = [_get_G(c) for c in colors]
+    Bs: list[int] = [_get_B(c) for c in colors]
     for i in range(1, int(len(colors) ** 0.5)):
         j = i*i
-        r, g, b = RGBs[i-1]
-        rx, gx, bx = RGBs[i]
-        ry, gy, by = RGBs[j]
+        r = Rs[i-1]
+        g = Gs[i-1]
+        b = Bs[i-1]
+        rx = Rs[i]
+        gx = Gs[i]
+        bx = Bs[i]
+        ry = Rs[j]
+        gy = Gs[j]
+        by = Bs[j]
         dx = abs(rx-r) + abs(gx-g) + abs(bx-b)
         dy = abs(ry-r) + abs(gy-g) + abs(by-b)
         if dy > dx:
-            RGBs[i] = (ry, gy, by)
-            RGBs[j] = (rx, gx, bx)
-    colors = [_to_color(r, g, b) for r, g, b in RGBs]
-    Rs = [c[0] for c in RGBs]
-    Gs = [c[1] for c in RGBs]
-    Bs = [c[2] for c in RGBs]
+            Rs[i] = ry
+            Gs[i] = gy
+            Bs[i] = by
+            Rs[j] = rx
+            Gs[j] = gx
+            Bs[j] = bx
+            c = colors[i]
+            colors[i] = colors[j]
+            colors[j] = c
     for i in range(min(len(colors), register_count)):
         color = colors[i]
         colorMap[color] = color
     if len(colors) > register_count:
-        for i in range(register_count, len(colors)):
-            color = colors[i]
-            r = Rs[i]
-            g = Gs[i]
-            b = Bs[i]
-            closest = 0
-            min_diff = 200000
-            for j in range(register_count):
-                r2 = Rs[j]
-                g2 = Gs[j]
-                b2 = Bs[j]
-                diff = (r2-r)**2+(g2-g)**2+(b2-b)**2
-                if diff <= min_diff:
-                    closest = j
-                    min_diff = diff
+        for color, closest in _executor.map(_find_closest, colors[register_count:], repeat(Rs[:register_count]), repeat(Gs[:register_count]), repeat(Bs[:register_count]), chunksize=_QPUNM_CHUNK_SIZE):
             colorMap[color] = colors[closest]
     return colorMap
 
-# type hell xD
-# TODO: Fix type annotations
-# TODO: Make this actually give decent results
+def _avg_RGBs(rgb_list: _OctreeColorNode) -> _RGBFloatTuple:
+    tr: int = 0
+    tg: int = 0
+    tb: int = 0
+    n = len(rgb_list)
+    for r, g, b in rgb_list:
+        tr += r # type: ignore
+        tg += g # type: ignore
+        tb += b # type: ignore
+    return (tr/n, tg/n, tb/n) # type: ignore
+
 # OctTree Fair Color Division
 def _OTFCD(colorCounts: _ColorCounter, register_count: int) -> _ColorMap:
     colorMap: _ColorMap = {}
-    RGBs = [_to_RGB(color) for color in colorCounts]
-    root = []
+    RGBs: List[_RGBTuple] = [_to_RGB(color) for color in colorCounts]
+    root: _OctreeColorNode = []
+    node_queue: Queue[_OctreeColorNode] = Queue()
+    remaining_color_queue: Queue[_Color] = Queue()
+    remaining_register_count: int = register_count
+    backup_color: _Color = max(colorCounts, key=lambda color: colorCounts[color])
+    color_count: int = len(colorCounts)
+    division_threshold: int = int(color_count * 256 * 256 * 2 / register_count ** 3)
 
-    def is_leaf_node(node: list[object]):
+    def unpack_node(node: _OctreeColorNode|_RGBFloatTuple) -> _RGBTuple:
+        r, g, b = node
+        return r, g, b # type: ignore
+
+    def is_leaf_node(node: _OctreeColorNode) -> bool:
         if len(node):
             return isinstance(node[0], tuple)
         return True
 
-    def is_divisible(node: list[object]):
-        return is_leaf_node(node) and len(node) > register_count * 8
+    def is_divisible(node: _OctreeColorNode) -> bool:
+        return is_leaf_node(node) and len(node) > division_threshold
     
-    def divide(node, depth=1): # type: ignore
+    def divide(node: _OctreeColorNode, depth: int = 1) -> int:
         if depth > 3:
             return depth
-        ar, ag, ab = _avg_RGBs(node) # type: ignore
-        buckets = [[] for _ in range(8)] # type: ignore
-        for r, g, b in node: # type: ignore
+        ar, ag, ab = _avg_RGBs(node)
+        buckets: List[_OctreeColorNode] = [[] for _ in range(8)]
+        for item in node:
+            r, g, b = unpack_node(item)
             index = 4 if r >= ar else 0
             if g >= ag:
                 index += 2
             if b >= ab:
                 index += 1
-            buckets[index].append((r, g, b)) # type: ignore
-        node.clear() # type: ignore
-        node.extend(buckets) # type: ignore
-        node.append(_round_RGB(ar, ag, ab)) # type: ignore
+            buckets[index].append((r, g, b))
+        node.clear()
+        node.extend(buckets)
+        node.append(_round_RGB(ar, ag, ab))
         max_depth = depth
-        for child in node[:8]: # type: ignore
-            if is_divisible(child): # type: ignore
-                max_depth = max(max_depth, divide(child, depth+1)) # type: ignore
-            if is_leaf_node(child): # type: ignore
-                if len(child): # type: ignore
-                    child.append(_round_RGB(*_avg_RGBs(child))) # type: ignore
+        for child in buckets:
+            if is_divisible(child):
+                max_depth = max(max_depth, divide(child, depth+1))
+            if is_leaf_node(child):
+                if len(child):
+                    child.append(_round_RGB(*_avg_RGBs(child)))
                 else:
-                    child.append(node[8]) # type: ignore
+                    child.append(node[8])
         return max_depth
     
-    node_queue = Queue() # type: ignore
-    root.extend(RGBs) # type: ignore
-    divide(root) # type: ignore
-    node_queue.put_nowait(root) # type: ignore
-    remaining_register_count = register_count
-    backup_color = 0 # type: ignore
+    root.extend(RGBs)
+    divide(root)
+    node_queue.put_nowait(root)
 
     while node_queue.qsize():
-        node = node_queue.get_nowait() # type: ignore
-        ar, ag, ab = node[len(node)-1] # type: ignore
-        avgc = _to_color(ar, ag, ab) # type: ignore
-        if is_leaf_node(node): # type: ignore
+        node: _OctreeColorNode = node_queue.get_nowait()
+        ar, ag, ab = unpack_node(node[len(node)-1])
+        avgc = _to_color(ar, ag, ab)
+        if is_leaf_node(node):
             if avgc not in colorMap:
-                if remaining_register_count and (len(node) > 1): # type: ignore
+                if remaining_register_count > 0 and (len(node) > 1):
                     colorMap[avgc] = avgc
                     remaining_register_count -= 1
-                    backup_color = avgc # type: ignore
+                    backup_color = avgc
                 else:
                     avgc = backup_color
-            for i in range(len(node)-1): # type: ignore
-                r, g, b = node[i] # type: ignore
-                color = _to_color(r, g, b) # type: ignore
+            for child in node[:-1]:
+                color = _to_color(*unpack_node(child))
                 if color not in colorMap:
                     colorMap[color] = colorMap[avgc]
+                    remaining_color_queue.put_nowait(color)
         else:
-            for child in node[:8]: # type: ignore
-                node_queue.put_nowait(child) # type: ignore
+            if remaining_register_count == 0:
+                for child in node[:8]:
+                    if isinstance(child, list):
+                        child[len(child)-1] = _to_RGB(avgc)
+            for child in node[:8]:
+                if isinstance(child, list):
+                    node_queue.put_nowait(child)
             if avgc in colorMap:
                 backup_color = colorMap[avgc]
+
+    if remaining_register_count > register_count:
+        while remaining_register_count > 0 and remaining_color_queue.qsize() > 0:
+            color: _Color = remaining_color_queue.get_nowait()
+            if colorMap[color] != color:
+                colorMap[color] = color
+                remaining_register_count -= 1
     return colorMap
 
-def _render_sixels(image: _1DImage, width: int, color2str: _Color2strMap, output: _OutputStream):
+def _repeat_mask_bytes(mask: int, run_length: int) -> bytearray:
+    s: bytes = _mask2byte[mask]
+    result: bytearray = bytearray()
+    if run_length < 4:
+        result += s * run_length
+        return result
+    while run_length > 255: # for compatibility (max allowed repetitions is unknown)
+        result += b'!255' + s
+        run_length -= 255
+    if run_length < 4:
+        result += s * run_length
+        return result
+    result += _runlength2bytes[run_length] + s
+    return result
+
+def _render_row(y: int, image: _1DImageBytes, width: int, height: int, color2bytes: _Color2bytesMap) -> bytearray:
+    row_out: bytearray = bytearray()
+    yw6: int = y * width * 6
+    colors_to_fill: _ColorList = list()
+    colors_to_fill_set: _ColorSet = set()
+    start_indicies: dict[_Color, int] = dict()
+    end_indicies: dict[_Color, int] = dict()
+    
+    # detect colors on the row
+    for x in range(width * 6):
+        c: _Color = image[yw6 + x]
+        if c in colors_to_fill_set:
+            end_indicies[c] = x
+        else:
+            end_indicies[c] = x
+            start_indicies[c] = x
+            colors_to_fill_set.add(c)
+    
+    for c in colors_to_fill_set:
+        colors_to_fill.append(c)
+    
+    worst_rl = 0
+    worst_color = colors_to_fill[0]
+    for c in start_indicies:
+        rl: int = 1 + end_indicies[c] - start_indicies[c]
+        if rl > worst_rl:
+            worst_rl = rl
+            worst_color = c
+    
+    # early row fill
+    c: _Color = worst_color
+    assert(c in color2bytes)
+    row_out += color2bytes[c]
+    row_out += _repeat_mask_bytes(63, width)
+    row_out += b'$'
+
+    # draw row
+    for c in colors_to_fill:
+        if c == worst_color:
+            continue
+        start_index: int = int(start_indicies[c] / 6)
+        end_index: int = int(end_indicies[c] / 6) + 1
+        index: int = yw6 + start_index * 6
+        row_out += color2bytes[c]
+        last_mask: _Mask = 0
+        run_length: int = start_index * (end_index > start_index)
+        for x in range(start_index, end_index):
+            mask  = (image[index    ] == c) * 32
+            mask += (image[index + 1] == c) * 16
+            mask += (image[index + 2] == c) * 8
+            mask += (image[index + 3] == c) * 4
+            mask += (image[index + 4] == c) * 2
+            mask += (image[index + 5] == c)
+            
+            index += 6
+            if last_mask == mask:
+                run_length += 1
+            else:
+                row_out += _repeat_mask_bytes(last_mask, run_length)
+                last_mask = mask
+                run_length = 1
+        row_out += _repeat_mask_bytes(last_mask, run_length)
+        if end_index < width:
+            row_out += _repeat_mask_bytes(0, width - end_index)
+        if start_index < width:
+            row_out += b'$'
+    row_out += b'-'
+    return row_out
+
+def _render_sixels(image: _1DImageBytes, width: int, color2bytes: _Color2bytesMap) -> bytearray:
+    height: int = len(image) // width
+    y_array: list[int] = list(range(height//6))
+    sixel_out = bytearray()
+    for row in _executor.map(_render_row, y_array, repeat(image), repeat(width), repeat(height), repeat(color2bytes), chunksize=_RENDERING_CHUNK_SIZE):
+        sixel_out += row
+    return sixel_out
+
+def _render_full(image: _1DImage, width: int, color2str: _Color2strMap, output: _OutputStream):
     height = len(image) // width
     for y in range(height//6):
         yw6 = y * width * 6
@@ -294,7 +452,7 @@ def _render_sixels(image: _1DImage, width: int, color2str: _Color2strMap, output
         # early row fill
         c = worst_color
         output.append(color2str[c])
-        _repeatMask(63, width, output)
+        _repeat_mask(63, width, output)
         output.append('$')
 
         # draw row
@@ -319,30 +477,28 @@ def _render_sixels(image: _1DImage, width: int, color2str: _Color2strMap, output
                 if last_mask == mask:
                     run_length += 1
                 else:
-                    _repeatMask(last_mask, run_length, output)
+                    _repeat_mask(last_mask, run_length, output)
                     last_mask = mask
                     run_length = 1
-            _repeatMask(last_mask, run_length, output)
+            _repeat_mask(last_mask, run_length, output)
             if end_index < width:
-                _repeatMask(0, width - end_index, output)
+                _repeat_mask(0, width - end_index, output)
             if start_index < width:
                 output.append('$')
         output.append('-')
 
 # Converts an image (2D lists of tuples, RGBA int[0, 255]) into an sixel image that can be printed.
-# for black and white images, this should be near instant
-# for grayscale images, this should take less than a few seconds
-# for colored images, this can take up to a minute or two (depending on the image size, the amount of different colors in the source image and the amount of required color registers)
-# EXPERIMENTAL: setting `register_count` argument to anything less than 2, outputs a full color image
 def img2sixels(image: _RGBAImage, *, register_count: int = 256, palette_generation_algorithm: PaletteGenerationAlgorithm = DEFAULT_PALETTE_GENERATION_ALGORITHM) -> str:
-    if register_count < 2:
+    assert(register_count == int(register_count))
+    assert(register_count > 0)
+    assert(register_count <= 256)
+    if register_count == 1:
         return _img2sixels_full_color(image)
-    width, height = len(image[0]), len(image)
-    output = [f"\033P0;0;0q\"1;1;{width};{height}"]
-    colors2str: dict[int, str] = {}
-    colors: list[int] = []
-    colorCounts: dict[int, int] = {}
-    colorMap: dict[int, int] = {}
+    width: int = len(image[0])
+    height: int = len(image)
+    output: _OutputStream = [f"\033P0;0;0q\"1;1;{width};{height}"]
+    colors: _ColorList = []
+    colorCounts: _ColorCounter = {}
     
     # pack image
     packed_image: list[list[int]] = []
@@ -369,21 +525,22 @@ def img2sixels(image: _RGBAImage, *, register_count: int = 256, palette_generati
     colorCounts[0] = 2**31
     
     # color palette
-    colorMap = _generate_color_map(colorCounts, register_count, palette_generation_algorithm)
-    colors2str = _stringify_color_map(colorMap, output)
+    colorMap: _ColorMap = _generate_color_map(colorCounts, register_count, palette_generation_algorithm)
+    colors2bytes: _Color2bytesMap = _bytify_color_map(colorMap, output)
     
     # convert colors according to the color palette
     _remap_2d_image(packed_image, colorMap)
     
     # flatten the packed image
-    flattened_image: list[int] = []
+    flattened_image: _1DImageBytes = bytearray()
     for y in range(0, height, 6):
         for x in range(width):
             for i in range(y + 5, y - 1, -1):
                 flattened_image.append(packed_image[i][x])
     
     # render
-    _render_sixels(flattened_image, width, colors2str, output)
+    result = _render_sixels(flattened_image, width, colors2bytes)
+    output.append(result.decode(encoding='ascii'))
     output.append("\033\\")
     return "".join(output)
 
@@ -423,14 +580,14 @@ def _img2sixels_full_color(image: _RGBAImage) -> str:
         packed_image.append([0] * width)
     
     # flatten the packed image
-    flattened_image: list[int] = []
+    flattened_image: _1DImage = []
     for y in range(0, height, 6):
         for x in range(width):
             for i in range(y + 5, y - 1, -1):
                 flattened_image.append(packed_image[i][x])
     
     # render
-    _render_sixels(flattened_image, width, _stringify_0_color_map(_FPIR({c: 1 for c in flattened_image}, 1)), output)
+    _render_full(flattened_image, width, _stringify_0_color_map(_FPIR({c: 1 for c in flattened_image}, 1)), output)
     output.append("\033\\")
     return "".join(output)
 
